@@ -1,5 +1,5 @@
 model_anomaly_path: ''
 model_overlap_path: ''
-model_path: models/best.pt
+model_path: models/best_CirNET.pth
 normal_count: 46
 tolerance: 1
