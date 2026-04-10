@@ -1,6 +1,7 @@
+# src/core/ai_model.py
 import os
-import re
 from ultralytics import YOLO
+from src.core.chromosome_classifier import ChromosomeClassifier, AnalysisReport
 
 
 class ChromosomeAnalyzer:
@@ -9,6 +10,7 @@ class ChromosomeAnalyzer:
         self.model = None
         self.model_overlap = None
         self.model_anomaly = None
+        self.classifier = ChromosomeClassifier()
         self.load_model()
 
     def _try_load_yolo(self, path: str):
@@ -20,7 +22,7 @@ class ChromosomeAnalyzer:
             return None
         ext = os.path.splitext(path)[1].lower()
         if ext not in (".pt", ".pth", ".onnx", ".engine"):
-            print(f"⚠️ Định dạng {ext} chưa được tích hợp với Ultralytics YOLO: {path}")
+            print(f"⚠️ Định dạng {ext} chưa được tích hợp: {path}")
             return None
         try:
             return YOLO(path)
@@ -37,9 +39,19 @@ class ChromosomeAnalyzer:
         else:
             print("❌ Chưa load được mô hình chính (model_path).")
 
-    def analyze(self, image_path):
+    def analyze(self, image_path: str):
+        """
+        Trả về:
+            annotated_img   : ảnh BGR đã vẽ kết quả
+            total_count     : số NST đếm được
+            report_html     : chuỗi HTML hiển thị trong UI
+            report_plain    : chuỗi thuần túy để xuất file
+            analysis_report : AnalysisReport đầy đủ (dùng cho UI nâng cao)
+        """
         if self.model is None:
-            raise Exception("Model chưa được load! Kiểm tra đường dẫn trong config.yaml hoặc Cài đặt.")
+            raise Exception(
+                "Model chưa được load! Kiểm tra đường dẫn trong config.yaml hoặc Cài đặt."
+            )
 
         normal = int(self.config.get("normal_count", 46))
         tolerance = int(self.config.get("tolerance", 1))
@@ -50,47 +62,73 @@ class ChromosomeAnalyzer:
         annotated_img = result.plot()
         total_count = len(result.boxes)
 
-        # Có thể mở rộng: dùng model_overlap / model_anomaly khi pipeline được định nghĩa rõ
-        _ = self.model_overlap
-        _ = self.model_anomaly
+        # ── Phân tích chuyên sâu ──────────────────────────────────────────
+        report: AnalysisReport = self.classifier.analyze(result, normal, tolerance)
 
-        diff = abs(total_count - normal)
-        is_normal = diff <= tolerance
+        # ── Tạo báo cáo HTML ─────────────────────────────────────────────
+        report_html, report_plain = self._build_reports(report, total_count, normal, tolerance)
 
-        report = []
-        report_plain = []
+        return annotated_img, total_count, report_html, report_plain, report
 
-        report.append(f"<b>1. Tổng số nhiễm sắc thể đếm được:</b> <span style='font-size:18px;'>{total_count}</span>")
-        report_plain.append(f"1. Tổng số NST đếm được: {total_count}")
+    # ------------------------------------------------------------------
+    # Tạo báo cáo
+    # ------------------------------------------------------------------
 
-        if is_normal:
-            report.append(
-                f"<b>2. Đánh giá số lượng:</b> <span style='color:#27AE60;'>Bình thường (chuẩn {normal} ± {tolerance})</span>"
-            )
-            report_plain.append(f"2. Đánh giá số lượng: Bình thường (chuẩn {normal} ± {tolerance})")
-            report.append(
-                "<b>3. Khuyến nghị:</b> Không phát hiện bất thường về số lượng trong ngưỡng đã cấu hình. "
-                "Nên đối chiếu karyotype chi tiết khi cần đánh giá cấu trúc NST."
-            )
-            report_plain.append(
-                "3. Khuyến nghị: Không phát hiện bất thường số lượng trong ngưỡng đã cấu hình."
-            )
+    def _build_reports(
+        self,
+        r: AnalysisReport,
+        total: int,
+        normal: int,
+        tolerance: int,
+    ):
+        diff = abs(total - normal)
+        count_color = "#27AE60" if r.is_normal_count else "#C0392B"
+        count_label = "Bình thường" if r.is_normal_count else (
+            f"Bất thường — {'thừa' if total > normal else 'thiếu'} {diff} NST"
+        )
+
+        # Màu mức độ rủi ro
+        risk_colors = {
+            "Bình thường": "#27AE60",
+            "Cần theo dõi": "#E67E22",
+            "Nguy cơ cao": "#C0392B",
+        }
+        risk_color = risk_colors.get(r.risk_level, "#7F8C8D")
+
+        # Nhóm Denver dạng chuỗi
+        group_str = "  ".join(
+            f"<b>{g}</b>:{n}" for g, n in r.group_sizes.items() if n > 0
+        )
+
+        # Hội chứng
+        if r.syndrome_flags:
+            syndrome_html = "<ul style='margin:4px 0 0 16px;padding:0;'>" + "".join(
+                f"<li style='color:#C0392B;'>{s}</li>" for s in r.syndrome_flags
+            ) + "</ul>"
+            syndrome_plain = "\n".join(f"  • {s}" for s in r.syndrome_flags)
         else:
-            status = "thừa" if total_count > normal else "thiếu"
-            report.append(
-                f"<b>2. Đánh giá số lượng:</b> <span style='color:#C0392B;'>Bất thường ({status}, lệch {diff} so với mức {normal} ± {tolerance})</span>"
-            )
-            report_plain.append(
-                f"2. Đánh giá số lượng: Bất thường ({status}, lệch {diff} so với mức {normal} ± {tolerance})"
-            )
-            report.append(
-                "<b>3. Khuyến nghị:</b> Có dấu hiệu lệch bội số lượng so với ngưỡng đã đặt. "
-                "Cần xét nghiệm karyotype hoặc kỹ thuật di truyền phù hợp để xác định chi tiết."
-            )
-            report_plain.append(
-                "3. Khuyến nghị: Có dấu hiệu lệch bội số lượng so với ngưỡng đã đặt — cần đánh giá thêm."
-            )
+            syndrome_html = "<span style='color:#27AE60;'>Không phát hiện hội chứng đặc trưng theo số lượng</span>"
+            syndrome_plain = "Không phát hiện hội chứng đặc trưng theo số lượng"
 
-        final_status_html = "<br>".join(report)
-        final_status_plain = "\n".join(report_plain)
-        return annotated_img, total_count, final_status_html, final_status_plain
+        html_lines = [
+            f"<b>① Số lượng NST:</b> <span style='font-size:20px;font-weight:900;color:{count_color};'>{total}</span>",
+            f"<b>② Đánh giá:</b> <span style='color:{count_color};'>{count_label} (chuẩn {normal} ± {tolerance})</span>",
+            f"<b>③ Giới tính ước tính:</b> {r.sex_estimation} "
+            f"<span style='color:#7F8C8D;font-size:12px;'>(Độ tin cậy: {r.sex_confidence})</span>",
+            f"<b>④ Mức độ rủi ro:</b> <span style='color:{risk_color};font-weight:bold;'>{r.risk_level}</span>",
+            f"<b>⑤ Nhóm Denver:</b> <span style='font-size:13px;'>{group_str if group_str else '—'}</span>",
+            f"<b>⑥ Hội chứng nghi ngờ:</b>{syndrome_html}",
+            "<span style='color:#95A5A6;font-size:12px;'>⚠ Kết quả mang tính hỗ trợ — cần karyotype chuyên sâu để xác nhận.</span>",
+        ]
+
+        plain_lines = [
+            f"1. Số lượng NST đếm được: {total}",
+            f"2. Đánh giá: {count_label} (chuẩn {normal} ± {tolerance})",
+            f"3. Giới tính ước tính: {r.sex_estimation} (Độ tin cậy: {r.sex_confidence})",
+            f"4. Mức độ rủi ro: {r.risk_level}",
+            f"5. Nhóm Denver: " + ", ".join(f"{g}:{n}" for g, n in r.group_sizes.items() if n > 0),
+            f"6. Hội chứng nghi ngờ:\n{syndrome_plain}",
+            "Lưu ý: Kết quả hỗ trợ chẩn đoán, không thay thế xét nghiệm chuyên sâu.",
+        ]
+
+        return "<br>".join(html_lines), "\n".join(plain_lines)

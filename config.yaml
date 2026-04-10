@@ -1,9 +1,5 @@
-# Đường dẫn mô hình chính (phân đoạn / đếm NST) — .pt, .pth, .onnx (Ultralytics YOLO)
-model_path: models/best.pt
-# Tùy chọn: mô hình tách NST chồng lấn (để trống nếu chưa dùng)
-model_overlap_path: ''
-# Tùy chọn: mô hình hỗ trợ xác định bất thường (để trống nếu chưa dùng)
 model_anomaly_path: ''
-# Ngưỡng bình thường: số NST chuẩn ± sai số cho phép (ví dụ 46 ± 1)
+model_overlap_path: ''
+model_path: models/best.pt
 normal_count: 46
 tolerance: 1
